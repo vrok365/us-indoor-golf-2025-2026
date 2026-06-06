@@ -75,6 +75,21 @@
   .empty{padding:40px; text-align:center; color:var(--muted)}
   footer{padding:18px 24px; color:var(--muted); font-size:11.5px; border-top:1px solid var(--line)}
 
+  /* stats */
+  #statsView{display:none}
+  .charts{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px}
+  .card-wide{grid-column:1 / -1}
+  .card h3{margin:0 0 14px; font-size:13.5px; color:var(--text); font-weight:600}
+  .bars{display:flex; flex-direction:column; gap:7px}
+  .bar{display:grid; grid-template-columns:120px 1fr 46px; align-items:center; gap:10px; font-size:12.5px}
+  .bar .blabel{color:var(--muted); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .bar .btrack{background:var(--panel2); border-radius:5px; height:18px; overflow:hidden}
+  .bar .bfill{height:100%; border-radius:5px; background:linear-gradient(90deg,var(--accent),#2f9d8d); min-width:2px; transition:width .25s}
+  .bar .bval{color:var(--text); font-weight:600; text-align:right}
+  .chart-empty{color:var(--muted); padding:8px 2px}
+  @media(max-width:640px){ .charts{grid-template-columns:1fr} .bar{grid-template-columns:84px 1fr 38px} }
+
   /* map */
   #mapView{display:none}
   #map{height:640px; border:1px solid var(--line); border-radius:10px; background:#0b1310}
@@ -110,6 +125,7 @@
   <div class="tabs">
     <div class="tab active" data-view="table" id="tabTable">📋 표 Table</div>
     <div class="tab" data-view="map" id="tabMap">🗺️ 지도 Map</div>
+    <div class="tab" data-view="stats" id="tabStats">📊 통계 Stats</div>
   </div>
 
   <div class="controls">
@@ -120,6 +136,8 @@
     <div class="ctrl"><label>유형 Type</label><select id="fType"><option value="">전체</option></select></div>
     <div class="ctrl"><label>검색 Search</label><input type="search" id="fSearch" placeholder="매장명·도시·주소…" /></div>
     <button class="btn" id="reset">초기화 Reset</button>
+    <button class="btn" id="exportCsv" title="현재 필터된 결과를 CSV로 저장">⬇ CSV 내보내기</button>
+    <button class="btn" id="copyLink" title="현재 필터 상태를 링크로 복사">🔗 링크 복사</button>
   </div>
 
   <div class="stats">
@@ -150,6 +168,24 @@
   <div id="mapView" style="position:relative">
     <div class="statehint" id="stateHint"></div>
     <div id="map"></div>
+  </div>
+
+  <!-- STATS VIEW -->
+  <div id="statsView">
+    <div class="charts">
+      <div class="card">
+        <h3>🎯 브랜드별 Brand</h3>
+        <div class="bars" id="chartBrand"></div>
+      </div>
+      <div class="card">
+        <h3>📅 월별 개장 Monthly openings</h3>
+        <div class="bars" id="chartMonth"></div>
+      </div>
+      <div class="card card-wide">
+        <h3>📍 주별 매장 수 (상위 15) Top states</h3>
+        <div class="bars" id="chartState"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -8004,6 +8040,69 @@ function updateMap(rows){
   }
 }
 
+/* ---------- STATS ---------- */
+function barChart(el, entries, opts){
+  opts=opts||{};
+  el.innerHTML="";
+  if(!entries.length){ el.innerHTML='<div class="chart-empty">데이터 없음</div>'; return; }
+  const max=Math.max(...entries.map(e=>e[1]))||1;
+  const frag=document.createDocumentFragment();
+  entries.forEach(([label,n])=>{
+    const row=document.createElement("div"); row.className="bar";
+    const pct=Math.round(n/max*100);
+    row.innerHTML=`<div class="blabel" title="${esc(label)}">${esc(label)}</div><div class="btrack"><div class="bfill" style="width:${pct}%"></div></div><div class="bval">${n}</div>`;
+    frag.appendChild(row);
+  });
+  el.appendChild(frag);
+}
+function renderStats(rows){
+  const byBrand={}; rows.forEach(v=>byBrand[v.brandKey]=(byBrand[v.brandKey]||0)+1);
+  barChart($("#chartBrand"), Object.entries(byBrand).sort((a,b)=>b[1]-a[1]));
+  const byState={}; rows.forEach(v=>byState[v.state]=(byState[v.state]||0)+1);
+  barChart($("#chartState"), Object.entries(byState).sort((a,b)=>b[1]-a[1]).slice(0,15));
+  const byMonth={}; rows.forEach(v=>{ const [y,m]=v.date.split("-"); const key=m?`${y}-${m}`:`${y}-??`; byMonth[key]=(byMonth[key]||0)+1; });
+  const monthEntries=Object.entries(byMonth).sort((a,b)=>a[0]<b[0]?-1:1).map(([k,n])=>{ const [y,m]=k.split("-"); return [m==="??"?`${y} 미상`:`${y} ${MONTHS[m]||m}`, n]; });
+  barChart($("#chartMonth"), monthEntries);
+}
+
+/* ---------- CSV EXPORT ---------- */
+function csvCell(s){ s=String(s??""); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+function exportCsv(){
+  const rows=sortRows(getFiltered().slice());
+  const cols=[["name","매장"],["city","도시"],["state","주"],["date","개장"],["approx","추정"],["brand","브랜드"],["type","유형"],["address","주소"],["url","웹사이트"],["source","출처"]];
+  const head=cols.map(c=>csvCell(c[1])).join(",");
+  const body=rows.map(v=>cols.map(c=>csvCell(c[0]==="approx"?(v.approx?"~":""):v[c[0]])).join(",")).join("\n");
+  const csv="﻿"+head+"\n"+body; // BOM → 엑셀 한글 안 깨짐
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`us-indoor-golf-${rows.length}.csv`;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+/* ---------- URL STATE (shareable filters) ---------- */
+const FILTER_IDS={y:"#fYear",m:"#fMonth",s:"#fState",b:"#fBrand",t:"#fType",q:"#fSearch"};
+let restoring=false;
+function writeHash(){
+  if(restoring) return;
+  const p=new URLSearchParams();
+  for(const [k,id] of Object.entries(FILTER_IDS)){ const val=$(id).value.trim(); if(val) p.set(k,val); }
+  if(currentView!=="table") p.set("v",currentView);
+  if(sortKey!=="date"||sortDir!==-1){ p.set("sk",sortKey); p.set("sd",sortDir>0?"a":"d"); }
+  const h=p.toString();
+  history.replaceState(null,"",h?"#"+h:location.pathname+location.search);
+}
+function readHash(){
+  const h=location.hash.replace(/^#/,""); if(!h) return false;
+  const p=new URLSearchParams(h); let any=false;
+  restoring=true;
+  for(const [k,id] of Object.entries(FILTER_IDS)){ if(p.has(k)){ $(id).value=p.get(k); any=true; } }
+  if(p.has("sk")){ sortKey=p.get("sk"); sortDir=p.get("sd")==="a"?1:-1; }
+  restoring=false;
+  return any || p.has("v");
+}
+
 /* ---------- shared render ---------- */
 function render(){
   const rows=getFiltered();
@@ -8012,25 +8111,46 @@ function render(){
   $("#brandBreak").innerHTML=Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`${k}: <b style="color:var(--text)">${n}</b>`).join(" &nbsp;·&nbsp; ");
   renderTable(rows);
   if(map) updateMap(rows);
+  if(currentView==="stats") renderStats(rows);
+  writeHash();
 }
 
 /* ---------- events ---------- */
-document.querySelectorAll("thead th").forEach(th=>th.addEventListener("click",()=>{ const k=th.dataset.key; if(sortKey===k)sortDir*=-1; else{sortKey=k;sortDir=1;} renderTable(getFiltered()); }));
+document.querySelectorAll("thead th").forEach(th=>th.addEventListener("click",()=>{ const k=th.dataset.key; if(sortKey===k)sortDir*=-1; else{sortKey=k;sortDir=1;} renderTable(getFiltered()); writeHash(); }));
 ["#fYear","#fMonth","#fState","#fBrand","#fType"].forEach(id=>$(id).addEventListener("change",render));
 $("#fSearch").addEventListener("input",render);
 $("#reset").addEventListener("click",()=>{ ["#fYear","#fMonth","#fState","#fBrand","#fType"].forEach(id=>$(id).value=""); $("#fSearch").value=""; sortKey="date"; sortDir=-1; render(); });
+$("#exportCsv").addEventListener("click",exportCsv);
+$("#copyLink").addEventListener("click",()=>{
+  writeHash();
+  const url=location.href;
+  const done=()=>{ const b=$("#copyLink"); const t=b.textContent; b.textContent="✓ 복사됨!"; setTimeout(()=>b.textContent=t,1400); };
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(done,()=>prompt("아래 링크를 복사하세요:",url)); }
+  else prompt("아래 링크를 복사하세요:",url);
+});
 
+let currentView="table";
 function setView(v){
+  currentView=v;
   $("#tabTable").classList.toggle("active",v==="table");
   $("#tabMap").classList.toggle("active",v==="map");
+  $("#tabStats").classList.toggle("active",v==="stats");
   $("#tableView").style.display = v==="table"?"block":"none";
   $("#mapView").style.display = v==="map"?"block":"none";
+  $("#statsView").style.display = v==="stats"?"block":"none";
   if(v==="map"){ if(!map){ initMap(); updateMap(getFiltered()); } setTimeout(()=>map.invalidateSize(),60); }
+  if(v==="stats") renderStats(getFiltered());
+  writeHash();
 }
 $("#tabTable").addEventListener("click",()=>setView("table"));
 $("#tabMap").addEventListener("click",()=>setView("map"));
+$("#tabStats").addEventListener("click",()=>setView("stats"));
 
+/* ---------- init (restore filters/view from URL) ---------- */
+const hadState=readHash();
+const startView=new URLSearchParams(location.hash.replace(/^#/,"")).get("v")||"table";
 render();
+if(startView!=="table") setView(startView);
 </script>
 </body>
 </html>
